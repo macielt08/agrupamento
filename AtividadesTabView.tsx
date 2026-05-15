@@ -1,412 +1,411 @@
-import { useState, useMemo } from 'react';
-import { GetNMovimentosOutputType } from 'zite-endpoints-sdk';
-import { Permissions } from '@/utils/permissions';
-import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
+import { useState, useEffect, useMemo, lazy, Suspense } from 'react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
-import { formatDateForDisplay, formatCurrency, parseValor } from '@/utils/dateUtils';
-import { ChevronDown, ChevronRight, Search, Lock, ArrowUpCircle, ArrowDownCircle, FileText, Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Plus, Pencil, Trash2, Search, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, CalendarDays, Map as MapIcon, List, RotateCw, MapPin } from 'lucide-react';
+import { toast } from 'sonner';
+import { getAtividades, deleteAtividade, getNoitesCampo, GetAtividadesOutputType, GetNoitesCampoOutputType } from 'zite-endpoints-sdk';
+import AtividadeDialog from './AtividadeDialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { formatDateForDisplay } from '@/utils/dateUtils';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
-type NMovimento = GetNMovimentosOutputType['records'][0];
+type Atividade = GetAtividadesOutputType['atividades'][0];
 
-const SECCOES = ["Lobitos", "Exploradores", "Pioneiros", "Caminheiros", "Agrupamento"];
-
-const CORES_SECCOES: Record<string, string> = {
-  "Lobitos": "bg-yellow-400",
-  "Exploradores": "bg-green-600",
-  "Pioneiros": "bg-blue-600",
-  "Caminheiros": "bg-red-600",
-  "Agrupamento": "bg-purple-600",
+type AtividadesViewProps = {
+  userSection?: string;
+  isAdmin: boolean;
+  isProgramer: boolean;
 };
 
-interface AtividadesTabViewProps {
-  records: NMovimento[];
-  anosAbertos: string[];
-  canViewAll: boolean;
-  userSeccao: string;
-  perms: Permissions;
-}
+const AtividadesMap = lazy(() => import('./AtividadesMap'));
 
-const normalizeString = (str: string) =>
-  str ? str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() : "";
+const openInGoogleMaps = (lat: any, lng: any) => {
+  const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+  window.open(url, '_blank');
+};
 
-const loadScript = (src: string): Promise<void> => new Promise((resolve, reject) => {
-  if (document.querySelector(`script[src="${src}"]`)) return resolve(undefined);
-  const s = document.createElement('script');
-  s.src = src; s.onload = () => resolve(undefined); s.onerror = reject;
-  document.head.appendChild(s);
-});
+export default function AtividadesView({ userSection, isAdmin, isProgramer }: AtividadesViewProps) {
+  const [atividades, setAtividades] = useState<Atividade[]>([]);
+  const [noitesCampo, setNoitesCampo] = useState<GetNoitesCampoOutputType['records']>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedSeccao, setSelectedSeccao] = useState<string>(isAdmin || isProgramer ? 'Todos' : userSection || '' );
+  const [searchTerm, setSearchTerm] = useState('');
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingAtividade, setEditingAtividade] = useState<Atividade | undefined>();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [atividadeToDelete, setAtividadeToDelete] = useState<Atividade | null>(null);
+  const [selectedYear, setSelectedYear] = useState<string>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [view, setView] = useState<'table' | 'map'>('table');
 
-export default function AtividadesTabView({
-  records,
-  anosAbertos,
-  canViewAll,
-  userSeccao,
-}: AtividadesTabViewProps) {
-  const [seccao, setSeccao] = useState<string>(() => canViewAll ? "Todos" : userSeccao || "");
-  const [ano, setAno] = useState<string>(() => {
-    const anoAtual = new Date().getFullYear().toString();
-    return anosAbertos.find(a => a.includes(anoAtual)) || anosAbertos[0] || '';
-  });
-  const [search, setSearch] = useState("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [generatingPdf, setGeneratingPdf] = useState<string | null>(null);
+  const availableYears = useMemo(() => {
+    const years = atividades
+      .map(a => a.ano?.toString())
+      .filter((year): year is string => !!year && year !== 'DELETED');
+    return Array.from(new Set(years)).sort((a, b) => b.localeCompare(a));
+  }, [atividades]);
 
-  const toggleExpand = (nome: string) => {
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(nome)) next.delete(nome);
-      else next.add(nome);
-      return next;
-    });
+  const fetchAtividades = async () => {
+    setLoading(true);
+    try {
+      const [atividadesResult, noitesCampoResult] = await Promise.all([
+        getAtividades({}),
+        getNoitesCampo({})
+      ]);
+      setAtividades(atividadesResult.atividades);
+      setNoitesCampo(noitesCampoResult.records);
+    } catch (error) {
+      toast.error('Erro ao carregar atividades');
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const getSecçãoColor = (s?: string) => CORES_SECCOES[s || ""] || "bg-gray-300";
+  useEffect(() => {
+    fetchAtividades();
+  }, []);
 
-  const filtered = useMemo(() => {
-    let res = records.filter(r => r.tipo !== "DELETED" && r.atividade && r.atividade.trim() !== "");
+  const getParticipantCount = (atividadeNome: string): number => {
+    const uniqueElementos = new Set(
+      noitesCampo
+        .filter(nc => nc.atividade === atividadeNome && nc.elemento && nc.elemento.trim() !== '')
+        .map(nc => nc.elemento)
+    );
+    return uniqueElementos.size;
+  };
 
-    if (seccao !== "Todos") {
-      res = res.filter(r => {
-        const seccaoRegisto = (r.seccao || "").trim().toLowerCase();
-        const seccaoFiltro = (seccao || "").trim().toLowerCase();
-        const isAgr = r.agr === 'true' || r.agr === 'TRUE';
-        if (seccaoFiltro !== 'agrupamento' && isAgr) return false;
-        return seccaoRegisto === seccaoFiltro || (seccaoFiltro === 'agrupamento' && isAgr);
-      });
+  const filteredAtividades = useMemo(() => {
+    const filtered = atividades.filter((atividade) => {
+      if (atividade.nome === 'DELETED') return false;
+      if (selectedSeccao !== 'Todos') {
+        if (selectedSeccao && (atividade.seccao !== selectedSeccao && atividade.seccao !== 'Agrupamento')) return false;
+      }
+      if (searchTerm) {
+        const search = searchTerm.toLowerCase();
+        const nomeMatch = atividade.nome?.toLowerCase().includes(search);
+        const localMatch = atividade.local?.toLowerCase().includes(search);
+        
+        if (!nomeMatch && !localMatch) return false;
+      };
+      if (selectedYear !== 'all' && atividade.ano?.toString() !== selectedYear) return false;
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      // Função auxiliar para converter string em timestamp comparável
+      const parseDate = (dateStr: any) => {
+        if (!dateStr) return 0;
+        
+        // Se a data já for um objeto Date ou ISO format (YYYY-MM-DD)
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) return d.getTime();
+
+        // Se a data vier no formato DD/MM/YYYY (comum em inputs manuais)
+        if (typeof dateStr === 'string' && dateStr.includes('/')) {
+          const [day, month, year] = dateStr.split('/').map(Number);
+          return new Date(year, month - 1, day).getTime();
+        }
+
+        return 0;
+      };
+
+      const dateA = parseDate(a.dataInicio);
+      const dateB = parseDate(b.dataInicio);
+
+      return dateB - dateA; // Decrescente
+    });
+  }, [atividades, selectedSeccao, searchTerm, selectedYear]);
+
+  const totalItems = filteredAtividades.length;
+  const totalPages = Math.ceil(totalItems / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = Math.min(startIndex + itemsPerPage, totalItems);
+
+  const paginatedAtividades = useMemo(() => {
+    return filteredAtividades.slice(startIndex, endIndex);
+  }, [filteredAtividades, startIndex, endIndex]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [selectedSeccao, searchTerm, selectedYear, itemsPerPage]);
+
+  const handlePageChange = (newPage: number) => {
+    if (newPage >= 1 && newPage <= totalPages) {
+      setCurrentPage(newPage);
     }
+  };
 
-    if (ano) {
-      res = res.filter(r => r.ano === ano);
-    }
+  const handleEdit = (atividade: Atividade) => {
+    setEditingAtividade(atividade);
+    setDialogOpen(true);
+  };
 
-    return res;
-  }, [records, seccao, ano]);
+  const handleCreate = () => {
+    setEditingAtividade(undefined);
+    setDialogOpen(true);
+  };
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, NMovimento[]>();
-    for (const r of filtered) {
-      const nome = r.atividade!.trim();
-      if (!map.has(nome)) map.set(nome, []);
-      map.get(nome)!.push(r);
-    }
-    return map;
-  }, [filtered]);
+  const handleDeleteClick = (atividade: Atividade) => {
+    setAtividadeToDelete(atividade);
+    setDeleteDialogOpen(true);
+  };
 
-  const atividadesFiltradas = useMemo(() => {
-    const entries = Array.from(grouped.entries());
-    if (!search.trim()) return entries;
-    const term = normalizeString(search);
-    return entries.filter(([nome]) => normalizeString(nome).includes(term));
-  }, [grouped, search]);
-
-  const gerarPDFAtividade = async (nomeAtividade: string, movimentos: NMovimento[]) => {
-    setGeneratingPdf(nomeAtividade);
+  const handleDeleteConfirm = async () => {
+    if (!atividadeToDelete) return;
     try {
-      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
-      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js');
-      const { jsPDF } = (window as any).jspdf;
-      const doc = new jsPDF();
-
-      const receitas = movimentos.filter(m => m.tipo === 'Receita');
-      const despesas = movimentos.filter(m => m.tipo === 'Despesa');
-      const totalReceitas = receitas.reduce((acc, m) => acc + parseValor(m.valor), 0);
-      const totalDespesas = despesas.reduce((acc, m) => acc + parseValor(m.valor), 0);
-      const resultado = totalReceitas - totalDespesas;
-
-      // Header
-      doc.setFont("helvetica", "bold"); doc.setFontSize(16);
-      doc.text("Relatório de Atividade", 105, 15, { align: 'center' });
-      doc.setFontSize(12); doc.setFont("helvetica", "normal");
-      doc.text(nomeAtividade, 105, 22, { align: 'center' });
-      doc.setFontSize(9);
-      doc.text(`${seccao} | ${ano} | Gerado em: ${new Date().toLocaleDateString('pt-PT')}`, 105, 28, { align: 'center' });
-
-      // Resumo
-      (doc as any).autoTable({
-        startY: 35,
-        head: [['Total Receitas', 'Total Despesas', 'Resultado']],
-        body: [[
-          `${totalReceitas.toFixed(2)}€`,
-          `${totalDespesas.toFixed(2)}€`,
-          `${resultado.toFixed(2)}€`
-        ]],
-        theme: 'grid',
-        headStyles: { fillColor: [51, 65, 85], halign: 'center', fontSize: 9 },
-        styles: { halign: 'center', fontSize: 9 },
-      });
-
-      let lastY = (doc as any).lastAutoTable?.finalY ?? 50;
-
-      // Receitas
-      if (receitas.length > 0) {
-        doc.setFontSize(10); doc.setFont('helvetica', 'bold');
-        doc.setTextColor(22, 101, 52);
-        doc.text('Receitas', 14, lastY + 8);
-        doc.setTextColor(0, 0, 0);
-
-        (doc as any).autoTable({
-          startY: lastY + 10,
-          head: [['Data', 'Descrição', 'Elemento', 'Valor', 'Estado']],
-          body: receitas.map(r => [
-            formatDateForDisplay(r.data),
-            r.descricao || '—',
-            r.elemento || '—',
-            `${parseValor(r.valor).toFixed(2)}€`,
-            r.estadoMovimento || '—'
-          ]),
-          theme: 'striped',
-          headStyles: { fillColor: [22, 101, 52], fontSize: 8 },
-          styles: { fontSize: 8 },
-          columnStyles: { 3: { halign: 'right', fontStyle: 'bold' } },
-        });
-        lastY = (doc as any).lastAutoTable?.finalY ?? lastY;
-      }
-
-      // Despesas
-      if (despesas.length > 0) {
-        doc.setFontSize(10); doc.setFont('helvetica', 'bold');
-        doc.setTextColor(185, 28, 28);
-        doc.text('Despesas', 14, lastY + 8);
-        doc.setTextColor(0, 0, 0);
-
-        (doc as any).autoTable({
-          startY: lastY + 10,
-          head: [['Data', 'Descrição', 'Elemento', 'Valor', 'Estado']],
-          body: despesas.map(r => [
-            formatDateForDisplay(r.data),
-            r.descricao || '—',
-            r.elemento || '—',
-            `${parseValor(r.valor).toFixed(2)}€`,
-            r.estadoMovimento || '—'
-          ]),
-          theme: 'striped',
-          headStyles: { fillColor: [185, 28, 28], fontSize: 8 },
-          styles: { fontSize: 8 },
-          columnStyles: { 3: { halign: 'right', fontStyle: 'bold' } },
-        });
-      }
-
-      const filename = `Atividade_${nomeAtividade.replace(/[^a-zA-Z0-9]/g, '_')}_${ano.replace('/', '-')}.pdf`;
-      doc.save(filename);
-    } catch (e) {
-      console.error('Erro ao gerar PDF:', e);
-      alert('Erro ao gerar PDF');
+      await deleteAtividade({ id: atividadeToDelete.id });
+      toast.success('Atividade eliminada com sucesso');
+      fetchAtividades();
+    } catch (error) {
+      toast.error('Erro ao eliminar atividade');
+      console.error(error);
     } finally {
-      setGeneratingPdf(null);
+      setDeleteDialogOpen(false);
+      setAtividadeToDelete(null);
     }
   };
 
   return (
-    <Card className="border-x-0 sm:border-2 shadow-none border-t-2 border-b-2 sm:rounded-xl">
-      <CardHeader className="space-y-3 p-3 sm:p-6 pb-3">
-        {/* Section tabs */}
-        <div className="flex flex-wrap gap-2 border-b pb-4">
-          {["Todos", ...SECCOES].map(s => {
-            const isLocked = !canViewAll && s !== userSeccao;
-            return (
-              <Button
-                key={s}
-                variant={seccao === s ? "default" : "ghost"}
-                size="sm"
-                onClick={() => { if (!isLocked) setSeccao(s); }}
-                disabled={isLocked}
-                className={cn(
-                  "relative h-8 rounded-full px-4 text-[13px] font-medium transition-all",
-                  seccao === s ? "shadow-sm" : "text-muted-foreground hover:bg-muted",
-                  isLocked && "opacity-40 cursor-not-allowed pointer-events-none"
-                )}
-              >
-                {s !== "Todos" && (
-                  <span className={cn("mr-2 h-2 w-2 rounded-full", getSecçãoColor(s), seccao !== s && "opacity-40")} />
-                )}
-                <span className={cn(s === "Todos" ? "inline" : "hidden md:inline")}>{s}</span>
-                {isLocked && <Lock className="ml-1.5 h-3 w-3 opacity-60" />}
-              </Button>
-            );
-          })}
-        </div>
+    <div className="space-y-4">
+      {/* BARRA DE FILTROS E AÇÕES */}
+      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+        <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+          <Select 
+            value={selectedSeccao} 
+            onValueChange={setSelectedSeccao} 
+            disabled={!isAdmin && !isProgramer}
+          >
+            <SelectTrigger className="w-full sm:w-[200px]">
+              <SelectValue placeholder="Selecione uma secção" />
+            </SelectTrigger>
+            <SelectContent>
+              {(isAdmin || isProgramer) && <SelectItem value="Todos">Todos</SelectItem>}
+              <SelectItem value="Lobitos">Lobitos</SelectItem>
+              <SelectItem value="Exploradores">Exploradores</SelectItem>
+              <SelectItem value="Pioneiros">Pioneiros</SelectItem>
+              <SelectItem value="Caminheiros">Caminheiros</SelectItem>
+              <SelectItem value="Agrupamento">Agrupamento</SelectItem>
+            </SelectContent>
+          </Select>
 
-        {/* Ano + Search */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {anosAbertos.length > 0 && (
-            <select
-              className="h-9 px-2 border rounded-lg text-sm font-bold bg-muted/30 border-border"
-              value={ano}
-              onChange={e => setAno(e.target.value)}
-            >
-              {anosAbertos.map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-          )}
-          <div className="relative flex-1 max-w-xs">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <div className="relative w-full sm:w-[300px]">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Pesquisar atividade..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="pl-8 h-9 text-sm"
+              placeholder="Pesquisar por nome..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-8"
             />
           </div>
-          <span className="text-xs text-muted-foreground font-medium">
-            {atividadesFiltradas.length} atividade(s) · {filtered.length} movimento(s)
-          </span>
+          
+          <Select value={selectedYear} onValueChange={setSelectedYear}>
+            <SelectTrigger className="w-full sm:w-[140px]">
+              <SelectValue placeholder="Ano" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os Anos</SelectItem>
+              {availableYears.map(year => (
+                <SelectItem key={year} value={year}>{year}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* BOTÃO DE REFRESH */}
+          <Button 
+            variant="outline" 
+            size="icon" 
+            onClick={fetchAtividades} 
+            disabled={loading}
+            title="Atualizar dados"
+          >
+            <RotateCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
         </div>
-      </CardHeader>
 
-      <CardContent className="p-3 sm:p-6 pt-0 space-y-3">
-        {atividadesFiltradas.length === 0 ? (
-          <p className="text-center py-12 text-muted-foreground italic text-sm">
-            Nenhuma atividade encontrada com movimentos para os filtros selecionados.
-          </p>
-        ) : atividadesFiltradas.map(([nome, movimentos]) => {
-          const receitas = movimentos.filter(m => m.tipo === 'Receita');
-          const despesas = movimentos.filter(m => m.tipo === 'Despesa');
-          const totalReceitas = receitas.reduce((acc, m) => acc + parseValor(m.valor), 0);
-          const totalDespesas = despesas.reduce((acc, m) => acc + parseValor(m.valor), 0);
-          const resultado = totalReceitas - totalDespesas;
-          const isExpanded = expanded.has(nome);
+        <div className="flex gap-2 w-full sm:w-auto">
+          <Tabs value={view} onValueChange={(v) => setView(v as 'table' | 'map')} className="w-full sm:w-[200px]">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="table"><List className="h-4 w-4 mr-2" /> Lista</TabsTrigger>
+              <TabsTrigger value="map"><MapIcon className="h-4 w-4 mr-2" /> Mapa</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          
+          <Button onClick={handleCreate} className="whitespace-nowrap font-bold">
+            <Plus className="h-4 w-4 mr-2" /> Nova Atividade
+          </Button>
+        </div>
+      </div>
 
-          return (
-            <div key={nome} className="border rounded-xl overflow-hidden shadow-sm">
-              <button
-                onClick={() => toggleExpand(nome)}
-                className="w-full flex items-center justify-between p-4 bg-muted/30 hover:bg-muted/50 transition-colors text-left gap-3"
-              >
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  {isExpanded
-                    ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  }
-                  <span className="font-semibold text-sm truncate">{nome}</span>
-                  <Badge variant="outline" className="text-[10px] shrink-0 hidden sm:inline-flex">
-                    {movimentos.length} mov.
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="hidden sm:flex items-center gap-1 text-xs text-green-600 font-medium">
-                    <ArrowUpCircle className="h-3 w-3" />
-                    {formatCurrency(totalReceitas)}€
-                  </div>
-                  <div className="hidden sm:flex items-center gap-1 text-xs text-red-600 font-medium">
-                    <ArrowDownCircle className="h-3 w-3" />
-                    {formatCurrency(totalDespesas)}€
-                  </div>
-                  <span className={cn(
-                    "text-sm font-bold font-mono",
-                    resultado >= 0 ? "text-green-600" : "text-red-600"
-                  )}>
-                    {resultado >= 0 ? "+" : ""}{formatCurrency(resultado)}€
-                  </span>
-                </div>
-              </button>
-
-              {isExpanded && (
-                <div className="px-4 py-2 border-b bg-muted/20 flex justify-end">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => gerarPDFAtividade(nome, movimentos)}
-                    disabled={generatingPdf === nome}
-                    className="h-8 gap-2 text-xs font-bold"
-                  >
-                    {generatingPdf === nome ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      {loading ? (
+        <Card><CardContent className="p-6 space-y-4"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></CardContent></Card>
+      ) : (
+        <>
+          {view === 'table' ? (
+            /* VISTA DE TABELA E CARDS */
+            <>
+              {/* TABELA (DESKTOP) */}
+              <div className="hidden md:block border rounded-lg bg-white overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50">
+                      <TableHead>Secção</TableHead>
+                      <TableHead>Nome</TableHead>
+                      <TableHead>Local</TableHead>
+                      <TableHead>Início</TableHead>
+                      <TableHead className="flex items-center gap-1">
+                        Fim <CalendarDays className="h-3 w-3" />
+                      </TableHead>
+                      <TableHead>Noites</TableHead>
+                      <TableHead>Partic.</TableHead>
+                      <TableHead className="text-right">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedAtividades.length === 0 ? (
+                      <TableRow><TableCell colSpan={8} className="text-center py-10 text-muted-foreground">Nenhuma atividade encontrada</TableCell></TableRow>
                     ) : (
-                      <FileText className="h-3.5 w-3.5 text-red-600" />
+                      paginatedAtividades.map((atividade) => (
+                        <TableRow key={atividade.id} className="hover:bg-muted/30 transition-colors">
+                          <TableCell>{atividade.seccao || '-'}</TableCell>
+                          <TableCell className="font-semibold text-primary">{atividade.nome}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-1">
+                              {/* Verifica se lat e lng existem e não são strings vazias/brancas */}
+                              {atividade.lat?.toString().trim() && atividade.lng?.toString().trim() && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                  onClick={() => openInGoogleMaps(atividade.lat, atividade.lng)}
+                                  title="Ver no Google Maps"
+                                >
+                                  <MapPin className="h-4 w-4" />
+                                </Button>
+                              )}
+                              <span>{atividade.local || '-'}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>{atividade.dataInicio ? formatDateForDisplay(atividade.dataInicio) : '-'}</TableCell>
+                          <TableCell className="font-medium">{atividade.dataFim ? formatDateForDisplay(atividade.dataFim) : '-'}</TableCell>
+                          <TableCell>{atividade.totalNoites || '-'}</TableCell>
+                          <TableCell>{getParticipantCount(atividade.nome!)}</TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1">
+                              <Button variant="ghost" size="icon" onClick={() => handleEdit(atividade)} className="hover:text-blue-600"><Pencil className="h-4 w-4" /></Button>
+                              <Button variant="ghost" size="icon" onClick={() => handleDeleteClick(atividade)} className="hover:text-red-600"><Trash2 className="h-4 w-4" /></Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
                     )}
-                    <span>Exportar PDF</span>
-                  </Button>
+                  </TableBody>
+                </Table>
+              </div>
+
+              {/* CARDS (MOBILE) */}
+              <div className="md:hidden space-y-4">
+                {paginatedAtividades.map((atividade) => (
+                  <Card key={atividade.id} className="shadow-sm">
+                    <CardHeader className="pb-2">
+                      <div className="flex justify-between items-start">
+                        <CardTitle className="text-base text-primary font-bold">{atividade.nome}</CardTitle>
+                        <span className="text-xs font-medium bg-muted px-2 py-1 rounded">{atividade.seccao}</span>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="text-sm space-y-2">
+                      <div className="grid grid-cols-2 gap-2 border-b pb-2">
+                        <p><span className="text-muted-foreground block text-xs uppercase">Fim:</span> {atividade.dataFim ? formatDateForDisplay(atividade.dataFim) : '-'}</p>
+                        <p>
+                          <span className="text-muted-foreground block text-xs uppercase">Local:</span> 
+                          <span className="flex items-center gap-1">
+                            {atividade.lat?.toString().trim() && atividade.lng?.toString().trim() && (
+                              <MapPin 
+                                className="h-3 w-3 text-red-500" 
+                                onClick={() => openInGoogleMaps(atividade.lat, atividade.lng)}
+                              />
+                            )}
+                            {atividade.local || '-'}
+                          </span>
+                        </p>
+                      </div>
+                      <div className="flex justify-between items-center pt-1">
+                        <span className="text-xs text-muted-foreground">{getParticipantCount(atividade.nome!)} participantes</span>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => handleEdit(atividade)}>Editar</Button>
+                          <Button variant="outline" size="sm" onClick={() => handleDeleteClick(atividade)} className="text-destructive border-destructive/20">Eliminar</Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {/* PAGINAÇÃO */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-2 py-4 border-t mt-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Linhas:</span>
+                  <Select value={itemsPerPage.toString()} onValueChange={(v) => setItemsPerPage(Number(v))}>
+                    <SelectTrigger className="w-20"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="20">20</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-              )}
-
-              {isExpanded && (
-                <div className="p-4 space-y-5 border-t bg-card">
-                  {receitas.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <ArrowUpCircle className="h-3.5 w-3.5 text-green-600" />
-                        <span className="text-xs font-bold uppercase tracking-wider text-green-600">
-                          Receitas
-                        </span>
-                      </div>
-                      <MovimentosTable movimentos={receitas} tipo="Receita" />
-                      <div className="text-right text-xs font-bold text-green-600 mt-1.5 pr-2">
-                        Subtotal: {formatCurrency(totalReceitas)}€
-                      </div>
-                    </div>
-                  )}
-
-                  {despesas.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-2">
-                        <ArrowDownCircle className="h-3.5 w-3.5 text-red-600" />
-                        <span className="text-xs font-bold uppercase tracking-wider text-red-600">
-                          Despesas
-                        </span>
-                      </div>
-                      <MovimentosTable movimentos={despesas} tipo="Despesa" />
-                      <div className="text-right text-xs font-bold text-red-600 mt-1.5 pr-2">
-                        Subtotal: {formatCurrency(totalDespesas)}€
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Resultado líquido */}
-                  <div className={cn(
-                    "flex items-center justify-between p-3 rounded-lg border text-sm font-bold",
-                    resultado >= 0
-                      ? "bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800"
-                      : "bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800"
-                  )}>
-                    <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider">
-                      Resultado Líquido
-                    </span>
-                    <span className={cn("font-mono text-base", resultado >= 0 ? "text-green-600" : "text-red-600")}>
-                      {resultado >= 0 ? "+" : ""}{formatCurrency(resultado)}€
-                    </span>
-                  </div>
+                <div className="text-sm font-medium">
+                  {totalItems > 0 ? startIndex + 1 : 0}-{endIndex} de {totalItems}
                 </div>
-              )}
+                <div className="flex items-center gap-1">
+                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => handlePageChange(1)} disabled={currentPage === 1}><ChevronsLeft className="h-4 w-4" /></Button>
+                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1}><ChevronLeft className="h-4 w-4" /></Button>
+                  <div className="flex items-center justify-center min-w-[80px] text-sm px-2">{currentPage} / {totalPages || 1}</div>
+                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages || totalPages === 0}><ChevronRight className="h-4 w-4" /></Button>
+                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => handlePageChange(totalPages)} disabled={currentPage === totalPages || totalPages === 0}><ChevronsRight className="h-4 w-4" /></Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            /* VISTA DE MAPA */
+            <div className="border rounded-lg bg-white p-2 min-h-[500px]">
+              <Suspense fallback={<div className="h-[500px] w-full bg-muted animate-pulse rounded-lg" />}>
+                <AtividadesMap atividades={filteredAtividades} onEdit={handleEdit} />
+              </Suspense>
             </div>
-          );
-        })}
-      </CardContent>
-    </Card>
-  );
-}
+          )}
+        </>
+      )}
 
-function MovimentosTable({ movimentos, tipo }: { movimentos: NMovimento[], tipo: string }) {
-  return (
-    <div className="overflow-x-auto rounded-lg border">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b bg-muted/30 text-muted-foreground uppercase text-[10px] font-bold">
-            <th className="text-left py-2 px-3">Data</th>
-            <th className="text-left py-2 px-3">Descrição</th>
-            <th className="text-left py-2 px-3 hidden sm:table-cell">Elemento</th>
-            <th className="text-left py-2 px-3 hidden sm:table-cell">Estado</th>
-            <th className="text-right py-2 px-3">Valor</th>
-          </tr>
-        </thead>
-        <tbody>
-          {movimentos.map(m => (
-            <tr key={m.id} className="border-b last:border-0 hover:bg-muted/20 transition-colors">
-              <td className="py-2 px-3 whitespace-nowrap">{formatDateForDisplay(m.data)}</td>
-              <td className="py-2 px-3 max-w-[180px] truncate">{m.descricao || '—'}</td>
-              <td className="py-2 px-3 hidden sm:table-cell max-w-[120px] truncate">{m.elemento || '—'}</td>
-              <td className="py-2 px-3 hidden sm:table-cell">{m.estadoMovimento || '—'}</td>
-              <td className={cn(
-                "py-2 px-3 text-right font-mono font-bold",
-                tipo === 'Receita' ? 'text-green-600' : 'text-red-600'
-              )}>
-                {formatCurrency(parseValor(m.valor))}€
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {/* DIÁLOGOS DE INTERAÇÃO */}
+      <AtividadeDialog 
+        open={dialogOpen} 
+        onOpenChange={setDialogOpen} 
+        atividade={editingAtividade} 
+        onSuccess={fetchAtividades} 
+        userSection={userSection} 
+        isAdmin={isAdmin} 
+        isProgramer={isProgramer} 
+        selectedSection={selectedSeccao} 
+      />
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar Atividade</AlertDialogTitle>
+            <AlertDialogDescription>Esta ação não pode ser revertida.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteConfirm} className="bg-destructive text-white hover:bg-destructive/90">Eliminar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
